@@ -6,6 +6,6 @@ import (
 
 //Const values and config
 const (
-	filepathRoot = "."
-	port = ":8080"
+	filepathRoot = "./app"
+	port = "8080"
 )

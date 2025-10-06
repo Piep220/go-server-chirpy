@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,13 +12,27 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 }
 
+type validChirpJSON struct {
+	Body string `json:"body"`
+}
+
+type errorReturnJSON struct {
+	Error string `json:"error"`
+}
+
+type validReturnJSON struct {
+	Valid bool `json:"valid"`
+}
+
+
 func main() {
 	mux := http.NewServeMux()
 	apiCfg := &apiConfig{}
 
-	mux.HandleFunc("GET /healthz", healthHandler)
-	mux.HandleFunc("GET /metrics", apiCfg.hitsHandler)
-	mux.HandleFunc("POST /reset", apiCfg.resetHandler)
+	mux.HandleFunc("GET /api/healthz", healthHandler)
+	mux.HandleFunc("POST /api/validate_chirp",validateChirpHandler)
+	mux.HandleFunc("GET /admin/metrics", apiCfg.hitsHandler)
+	mux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
 
 	mux.Handle("/app/",
 		apiCfg.middlewareMetricsInc(
@@ -46,11 +61,54 @@ func main() {
 	}
 }
 
+func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
+	decoder := json.NewDecoder(r.Body)
+	params := validChirpJSON{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if len(params.Body) > 140 {
+		tooLongError := errorReturnJSON{
+			Error: "Chirp is too long",
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		jsonBytes, err := json.Marshal(tooLongError)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, `{"error":"Internal server error"}`)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(jsonBytes)
+		return
+	}
+	validJSON := validReturnJSON {
+		Valid: true,
+	}
+	jsonBytes, err := json.Marshal(validJSON)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"error":"Internal server error"}`)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Write(jsonBytes)
+}
+
 func (ac *apiConfig) hitsHandler(w http.ResponseWriter, r *http.Request) {
 	count := ac.fileserverHits.Load()
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	fmt.Fprintf(w, "Hits: %d\n", count)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	html := fmt.Sprintf(`<html>
+  <body>
+    <h1>Welcome, Chirpy Admin</h1>
+    <p>Chirpy has been visited %d times!</p>
+  </body>
+</html>`, count)
+	fmt.Fprint(w, html)
 }
 
 func (ac *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {

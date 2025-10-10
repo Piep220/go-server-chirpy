@@ -9,7 +9,9 @@ import (
 	"os"
 	"regexp"
 	"sync/atomic"
+
 	"github.com/Piep220/go-server-chirpy/internal/database"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
@@ -19,20 +21,17 @@ type apiConfig struct {
 	db *database.Queries
 }
 
-type validChirpJSON struct {
-	Body string `json:"body"`
-}
-
 type errorReturnJSON struct {
 	Error string `json:"error"`
 }
 
-type validReturnJSON struct {
-	Valid bool `json:"valid"`
+type chirpJSON struct {
+	Body   string 	 `json:"body"`
+	UserID uuid.UUID `json:"user_id"`
 }
 
-type cleanedReturnJSON struct {
-	CleanedBody string `json:"cleaned_body"`
+type emailJSON struct {
+	Email string `json:"email"`
 }
 
 func main() {
@@ -48,7 +47,9 @@ func main() {
 	}
 
 	mux.HandleFunc("GET /api/healthz", healthHandler)
-	mux.HandleFunc("POST /api/validate_chirp", validateChirpHandler)
+	mux.HandleFunc("POST /api/chirps", apiCfg.chirpsHandler)
+	mux.HandleFunc("POST /api/users", apiCfg.usersHandler)
+
 	mux.HandleFunc("GET /admin/metrics", apiCfg.hitsHandler)
 	mux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
 
@@ -79,9 +80,9 @@ func main() {
 	}
 }
 
-func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
+func (ac *apiConfig)chirpsHandler(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
-	params := validChirpJSON{}
+	params := chirpJSON{}
 	err := decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "invalid JSON payload")
@@ -93,7 +94,37 @@ func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cleaned := cleanProfanity(params.Body)
-	respondWithJSON(w, http.StatusOK, cleanedReturnJSON{CleanedBody: cleaned})
+
+	chirp := database.CreateChirpParams{
+		Body: cleaned,
+		UserID: params.UserID,
+	}
+	
+	createdChirp, err := ac.db.CreateChirp(r.Context(), chirp)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Problem creating chirp record")
+		return
+	}
+
+	respondWithJSON(w, http.StatusCreated, createdChirp)
+}
+
+func (ac *apiConfig)usersHandler(w http.ResponseWriter, r *http.Request) {
+	decoder := json.NewDecoder(r.Body)
+	params := emailJSON{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "invalid JSON payload")
+		return
+	}
+	
+	user, err := ac.db.CreateUser(r.Context(), params.Email)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "error creating db entry")
+		return
+	}
+
+	respondWithJSON(w, http.StatusCreated, user)
 }
 
 func cleanProfanity(text string) string {
@@ -127,10 +158,17 @@ func (ac *apiConfig) hitsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ac *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
+	if os.Getenv("PLATFORM") != "dev" {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	ac.db.DeleteAllUsers(r.Context())
+	ac.db.DeleteAllChirps(r.Context())
 	ac.fileserverHits.Store(0)
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	fmt.Fprint(w, "Hit counter reset\n")
+	fmt.Fprint(w, "System reset\n")
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {

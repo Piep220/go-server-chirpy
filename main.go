@@ -48,6 +48,7 @@ func main() {
 
 	mux.HandleFunc("GET /api/healthz", healthHandler)
 	mux.HandleFunc("GET /api/chirps", apiCfg.getChirpsHandler)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChripFromID)
 	mux.HandleFunc("POST /api/chirps", apiCfg.chirpsHandler)
 	mux.HandleFunc("POST /api/users", apiCfg.usersHandler)
 
@@ -117,6 +118,27 @@ func (ac *apiConfig)getChirpsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respondWithJSON(w, http.StatusOK, posts)
+}
+
+func (ac *apiConfig)getChripFromID(w http.ResponseWriter, r *http.Request) {
+	uuidStr := r.PathValue("chirpID")
+	if uuidStr == "" {
+		respondWithError(w, http.StatusNotFound, "no such chirp")
+		return
+	}
+
+	id, err := uuid.Parse(uuidStr)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, "invalid UUID")
+		return
+	}
+
+	chirp, err := ac.db.GetChirpByID(r.Context(), id)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, "cannot retrieve chirp")
+		return
+	}
+	respondWithJSON(w, http.StatusOK, chirp)
 }
 
 func (ac *apiConfig)usersHandler(w http.ResponseWriter, r *http.Request) {

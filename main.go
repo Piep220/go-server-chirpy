@@ -47,6 +47,7 @@ func main() {
 	}
 
 	mux.HandleFunc("GET /api/healthz", healthHandler)
+	mux.HandleFunc("GET /api/chirps", apiCfg.getChirpsHandler)
 	mux.HandleFunc("POST /api/chirps", apiCfg.chirpsHandler)
 	mux.HandleFunc("POST /api/users", apiCfg.usersHandler)
 
@@ -107,6 +108,15 @@ func (ac *apiConfig)chirpsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondWithJSON(w, http.StatusCreated, createdChirp)
+}
+
+func (ac *apiConfig)getChirpsHandler(w http.ResponseWriter, r *http.Request) {
+	posts, err := ac.db.GetAllChirps(r.Context())
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "error retrieving db entry")
+		return
+	}
+	respondWithJSON(w, http.StatusOK, posts)
 }
 
 func (ac *apiConfig)usersHandler(w http.ResponseWriter, r *http.Request) {

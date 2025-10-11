@@ -9,7 +9,9 @@ import (
 	"os"
 	"regexp"
 	"sync/atomic"
+	"time"
 
+	"github.com/Piep220/go-server-chirpy/internal/auth"
 	"github.com/Piep220/go-server-chirpy/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -30,8 +32,16 @@ type chirpJSON struct {
 	UserID uuid.UUID `json:"user_id"`
 }
 
-type emailJSON struct {
-	Email string `json:"email"`
+type loginUser struct {
+	Password string `json:"password"`
+	Email    string `json:"email"`
+}
+
+type PublicUser struct {
+	ID             uuid.UUID `json:"id"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	Email          string    `json:"email"`
 }
 
 func main() {
@@ -51,6 +61,7 @@ func main() {
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChripFromID)
 	mux.HandleFunc("POST /api/chirps", apiCfg.chirpsHandler)
 	mux.HandleFunc("POST /api/users", apiCfg.usersHandler)
+	mux.HandleFunc("POST /api/login", apiCfg.loginHandler)
 
 	mux.HandleFunc("GET /admin/metrics", apiCfg.hitsHandler)
 	mux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
@@ -143,20 +154,74 @@ func (ac *apiConfig)getChripFromID(w http.ResponseWriter, r *http.Request) {
 
 func (ac *apiConfig)usersHandler(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
-	params := emailJSON{}
+	params := loginUser{}
 	err := decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "invalid JSON payload")
 		return
 	}
+
+	hash, err := auth.HashPassword(params.Password)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "error creating password")
+		return
+	}
+
+	newUser := database.CreateUserParams{
+		Email: params.Email,
+		HashedPassword: hash,
+	}
 	
-	user, err := ac.db.CreateUser(r.Context(), params.Email)
+	user, err := ac.db.CreateUser(r.Context(), newUser)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "error creating db entry")
 		return
 	}
 
-	respondWithJSON(w, http.StatusCreated, user)
+	publicUser := PublicUser{
+		ID: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	}
+
+	respondWithJSON(w, http.StatusCreated, publicUser)
+}
+
+func (ac *apiConfig)loginHandler(w http.ResponseWriter, r *http.Request) {
+	decoder := json.NewDecoder(r.Body)
+	params := loginUser{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "invalid JSON payload")
+		return
+	}
+
+	user, err := ac.db.GetUserByEmail(r.Context(),params.Email)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "error finding user")
+		return
+	}
+
+	pwCheck, err := auth.CheckPasswordHash(params.Password, user.HashedPassword)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "error validating password")
+		return
+	}
+
+	if !pwCheck {
+		respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
+		return
+	}
+
+	publicUser := PublicUser{
+		ID: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	}
+
+	respondWithJSON(w, http.StatusOK, publicUser)
 }
 
 func cleanProfanity(text string) string {

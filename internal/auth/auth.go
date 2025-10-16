@@ -1,9 +1,12 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
-	"time"
 	"fmt"
+	"net/http"
+	"time"
 
 	"github.com/alexedwards/argon2id"
 	"github.com/golang-jwt/jwt/v5"
@@ -65,4 +68,29 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 	}
 
 	return id, nil
+}
+
+func GetBearerToken(headers http.Header) (string, error) {
+	authHeader := headers.Get("Authorization")
+	if authHeader == "" {
+		return "", errors.New("no Authorization header provided")
+	}
+	var tokenType, token string
+	n, err := fmt.Sscanf(authHeader, "%s %s", &tokenType, &token)
+	if err != nil || n != 2 {
+		return "", errors.New("invalid Authorization header format")
+	}
+	if tokenType != "Bearer" {
+		return "", errors.New("authorization header is not a Bearer token")
+	}
+	return token, nil
+}
+
+func MakeRefreshToken() (string, error) {
+	b := make([]byte, 32)
+	_, err := rand.Read(b)
+	if err != nil {
+		return "", fmt.Errorf("error generating refresh token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }

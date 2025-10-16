@@ -19,8 +19,9 @@ import (
 )
 
 type apiConfig struct {
-	fileserverHits atomic.Int32
-	db *database.Queries
+	fileserverHits 	atomic.Int32
+	db 				*database.Queries
+	jwtSecret 		string
 }
 
 type errorReturnJSON struct {
@@ -33,8 +34,9 @@ type chirpJSON struct {
 }
 
 type loginUser struct {
-	Password string `json:"password"`
-	Email    string `json:"email"`
+	Password 		 string `json:"password"`
+	Email    		 string `json:"email"`
+	ExpiresInSeconds int    `json:"expires_in_seconds"`
 }
 
 type PublicUser struct {
@@ -42,11 +44,18 @@ type PublicUser struct {
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 	Email          string    `json:"email"`
+	Token     	   string    `json:"token"`
+	RefreshToken   string    `json:"refresh_token,omitempty"`
+}
+
+type tokenJSON struct {
+	Token string `json:"token"`
 }
 
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
+	jwtSecret := os.Getenv("JWT_SECRET")
 	db, _ := sql.Open("postgres", dbURL)
 	dbQueries := database.New(db)
 
@@ -54,6 +63,7 @@ func main() {
 	apiCfg := &apiConfig{
 		fileserverHits: atomic.Int32{},
 		db: 			dbQueries,
+		jwtSecret: jwtSecret,
 	}
 
 	mux.HandleFunc("GET /api/healthz", healthHandler)
@@ -62,6 +72,8 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", apiCfg.chirpsHandler)
 	mux.HandleFunc("POST /api/users", apiCfg.usersHandler)
 	mux.HandleFunc("POST /api/login", apiCfg.loginHandler)
+	mux.HandleFunc("POST /api/refresh", apiCfg.refreshHandler)
+	mux.HandleFunc("POST /api/revoke", apiCfg.revokeHandler)
 
 	mux.HandleFunc("GET /admin/metrics", apiCfg.hitsHandler)
 	mux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
@@ -102,6 +114,18 @@ func (ac *apiConfig)chirpsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "error getting token from header")
+		return
+	}
+
+	id, err := auth.ValidateJWT(token, ac.jwtSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "invalid JWT")
+		return
+	}
+
 	if len(params.Body) > 140 {
 		respondWithError(w, http.StatusBadRequest, "Chirp is too long")
 		return
@@ -110,7 +134,7 @@ func (ac *apiConfig)chirpsHandler(w http.ResponseWriter, r *http.Request) {
 
 	chirp := database.CreateChirpParams{
 		Body: cleaned,
-		UserID: params.UserID,
+		UserID: id,
 	}
 	
 	createdChirp, err := ac.db.CreateChirp(r.Context(), chirp)
@@ -214,11 +238,41 @@ func (ac *apiConfig)loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	jwtExpiraionTime := time.Hour
+	if params.ExpiresInSeconds != 0 {
+		jwtExpiraionTime = time.Duration(params.ExpiresInSeconds)
+	}
+	
+	token, err := auth.MakeJWT(user.ID, ac.jwtSecret, jwtExpiraionTime)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "error generating jwt")
+		return
+	}
+
+	refreshToken, err := auth.MakeRefreshToken()
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "error generating refresh token")
+		return
+	}
+
+	refTokenParams := database.CreateRefreshTokenParams{
+		Token: refreshToken,
+		UserID: user.ID,
+		ExpiresAt: time.Now().Add(60 * 24 * time.Hour),
+	}
+	_, err = ac.db.CreateRefreshToken(r.Context(), refTokenParams)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "error storing refresh token")
+		return
+	}
+
 	publicUser := PublicUser{
 		ID: user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		Token: token,
+		RefreshToken: refreshToken,
 	}
 
 	respondWithJSON(w, http.StatusOK, publicUser)
@@ -262,6 +316,7 @@ func (ac *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
 
 	ac.db.DeleteAllUsers(r.Context())
 	ac.db.DeleteAllChirps(r.Context())
+	ac.db.DeleteAllRefreshTokens(r.Context())
 	ac.fileserverHits.Store(0)
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -283,18 +338,84 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("OK"))
 }
 
-/*
-func middlewareLog(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("%s %s", r.Method, r.URL.Path)
-		next.ServeHTTP(w, r)
-	})
-}
-*/
-
 func (ac *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ac.fileserverHits.Add(1)
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (ac *apiConfig) refreshHandler(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "error getting token from header")
+		return
+	}
+
+	if token == "" {
+		respondWithError(w, http.StatusUnauthorized, "no token provided")
+		return
+	}
+
+	refreshToken, err := ac.db.GetRefreshToken(r.Context(), token)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "invalid refresh token")
+		return
+	}
+
+	if refreshToken.ExpiresAt.Before(time.Now()) {
+		respondWithError(w, http.StatusUnauthorized, "refresh token expired")
+		return
+	}
+
+	if refreshToken.RevokedAt.Valid {
+		respondWithError(w, http.StatusUnauthorized, "refresh token revoked")
+		return
+	}
+
+	user, err := ac.db.GetUserByID(r.Context(), refreshToken.UserID)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "error finding user")
+		return
+	}
+
+	newJWT, err := auth.MakeJWT(user.ID, ac.jwtSecret, time.Hour)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "error generating jwt")
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, tokenJSON{Token: newJWT})
+}
+
+func (ac *apiConfig) revokeHandler(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "error getting token from header")
+		return
+	}
+
+	if token == "" {
+		respondWithError(w, http.StatusUnauthorized, "no token provided")
+		return
+	}
+
+	refreshToken, err := ac.db.GetRefreshToken(r.Context(), token)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "invalid refresh token")
+		return
+	}
+
+	if refreshToken.RevokedAt.Valid {
+		respondWithError(w, http.StatusUnauthorized, "refresh token already revoked")
+		return
+	}
+
+	err = ac.db.RevokeRefreshToken(r.Context(), refreshToken.Token)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "error revoking refresh token")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

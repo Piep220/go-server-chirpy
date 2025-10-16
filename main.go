@@ -74,6 +74,7 @@ func main() {
 	mux.HandleFunc("POST /api/login", apiCfg.loginHandler)
 	mux.HandleFunc("POST /api/refresh", apiCfg.refreshHandler)
 	mux.HandleFunc("POST /api/revoke", apiCfg.revokeHandler)
+	mux.HandleFunc("PUT /api/users", apiCfg.updateUserHandler)
 
 	mux.HandleFunc("GET /admin/metrics", apiCfg.hitsHandler)
 	mux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
@@ -418,4 +419,68 @@ func (ac *apiConfig) revokeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (ac *apiConfig) updateUserHandler(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "error getting token from header")
+		return
+	}
+
+	id, err := auth.ValidateJWT(token, ac.jwtSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "invalid JWT")
+		return
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := loginUser{}
+	err = decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "invalid JSON payload")
+		return
+	}
+
+	user, err := ac.db.GetUserByID(r.Context(), id)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "error finding user")
+		return
+	}
+
+	if params.Email == "" {
+		params.Email = user.Email
+	}
+
+	var hash string
+	if params.Password == "" {
+		hash = user.HashedPassword
+	} else {
+		hash, err = auth.HashPassword(params.Password)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "error creating password")
+			return
+		}
+	}
+
+	updateParams := database.UpdateUserParams{
+		ID: id,
+		Email: params.Email,
+		HashedPassword: hash,
+	}
+
+	updatedUser, err := ac.db.UpdateUser(r.Context(), updateParams)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "error updating db entry")
+		return
+	}
+	
+	publicUser := PublicUser{
+		ID: updatedUser.ID,
+		CreatedAt: updatedUser.CreatedAt,
+		UpdatedAt: updatedUser.UpdatedAt,
+		Email: updatedUser.Email,
+	}
+
+	respondWithJSON(w, http.StatusOK, publicUser)
 }

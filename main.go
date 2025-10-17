@@ -22,6 +22,7 @@ type apiConfig struct {
 	fileserverHits 	atomic.Int32
 	db 				*database.Queries
 	jwtSecret 		string
+	polkaKey 		string
 }
 
 type errorReturnJSON struct {
@@ -46,6 +47,14 @@ type PublicUser struct {
 	Email          string    `json:"email"`
 	Token     	   string    `json:"token"`
 	RefreshToken   string    `json:"refresh_token,omitempty"`
+	RedStatus 	   bool      `json:"is_chirpy_red"`
+}
+
+type polkaWebhook struct {
+	Event string `json:"event"`
+	Data  struct {
+		UserID string `json:"user_id"`
+	} `json:"data"`
 }
 
 type tokenJSON struct {
@@ -56,6 +65,10 @@ func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	jwtSecret := os.Getenv("JWT_SECRET")
+	polkaKey := os.Getenv("POLKA_KEY")
+	filepathRoot := os.Getenv("FILEPATHROOT")
+	port := os.Getenv("PORT")
+
 	db, _ := sql.Open("postgres", dbURL)
 	dbQueries := database.New(db)
 
@@ -63,7 +76,8 @@ func main() {
 	apiCfg := &apiConfig{
 		fileserverHits: atomic.Int32{},
 		db: 			dbQueries,
-		jwtSecret: jwtSecret,
+		jwtSecret: 		jwtSecret,
+		polkaKey: 		polkaKey,
 	}
 
 	mux.HandleFunc("GET /api/healthz", healthHandler)
@@ -74,6 +88,7 @@ func main() {
 	mux.HandleFunc("POST /api/login", apiCfg.loginHandler)
 	mux.HandleFunc("POST /api/refresh", apiCfg.refreshHandler)
 	mux.HandleFunc("POST /api/revoke", apiCfg.revokeHandler)
+	mux.HandleFunc("POST /api/polka/webhooks", apiCfg.polkaWebhookHandler)
 	mux.HandleFunc("PUT /api/users", apiCfg.updateUserHandler)
 	mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.deleteChirpHandler)
 
@@ -209,6 +224,7 @@ func (ac *apiConfig)usersHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		RedStatus: user.IsChirpyRed,
 	}
 
 	respondWithJSON(w, http.StatusCreated, publicUser)
@@ -275,6 +291,7 @@ func (ac *apiConfig)loginHandler(w http.ResponseWriter, r *http.Request) {
 		Email: user.Email,
 		Token: token,
 		RefreshToken: refreshToken,
+		RedStatus: user.IsChirpyRed,
 	}
 
 	respondWithJSON(w, http.StatusOK, publicUser)
@@ -481,6 +498,7 @@ func (ac *apiConfig) updateUserHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: updatedUser.CreatedAt,
 		UpdatedAt: updatedUser.UpdatedAt,
 		Email: updatedUser.Email,
+		RedStatus: updatedUser.IsChirpyRed,
 	}
 
 	respondWithJSON(w, http.StatusOK, publicUser)
@@ -529,4 +547,61 @@ func (ac *apiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (ac *apiConfig) polkaWebhookHandler(w http.ResponseWriter, r *http.Request) {
+	apiKeyFromHeader, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "error getting API key from header")
+		return
+	}
+	if apiKeyFromHeader != ac.polkaKey {
+		respondWithError(w, http.StatusUnauthorized, "invalid API key")
+		return
+	}
+	
+	decoder := json.NewDecoder(r.Body)
+	params := polkaWebhook{}
+	err = decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "invalid JSON payload")
+		return
+	}
+
+	switch params.Event {
+	case "user.upgraded":
+		userID, err := uuid.Parse(params.Data.UserID)
+		if err != nil {
+			respondWithError(w, http.StatusNotFound, "invalid user_id UUID")
+			return
+		}
+
+		user, err := ac.db.GetUserByID(r.Context(), userID)
+		if err != nil {
+			respondWithError(w, http.StatusNotFound, "error finding user")
+			return
+		}
+
+		if user.IsChirpyRed {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		updateParams := database.UpdateRedStatusByUserIDParams{
+			ID: user.ID,
+			IsChirpyRed: true,
+		}
+		_, err = ac.db.UpdateRedStatusByUserID(r.Context(), updateParams)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "error updating db entry")
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+		return
+
+	default:
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 }

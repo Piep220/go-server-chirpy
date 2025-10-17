@@ -238,40 +238,40 @@ func TestGetBearerToken(t *testing.T) {
 		expectedError string
 	}{
 		{
-			name:      "missing Authorization header",
-			headers:   http.Header{}, // empty headers
-			expectErr: true,
-			expectedError: "no Authorization header provided",
+			name:      		"missing Authorization header",
+			headers:   		http.Header{}, // empty headers
+			expectErr: 		true,
+			expectedError: 	"no Authorization header provided",
 		},
 		{
-			name:    "valid Bearer token",
-			headers: http.Header{"Authorization": {"Bearer abc123"}},
-			wantToken:     "abc123",
-			expectErr:     false,
+			name:    		"valid Bearer token",
+			headers: 		http.Header{"Authorization": {"Bearer abc123"}},
+			wantToken:      "abc123",
+			expectErr:      false,
 		},
 		{
-			name:          "wrong token type",
-			headers:       http.Header{"Authorization": {"Basic abc123"}},
-			expectErr:     true,
-			expectedError: "authorization header is not a Bearer token",
+			name:           "wrong token type",
+			headers:        http.Header{"Authorization": {"Basic abc123"}},
+			expectErr:      true,
+			expectedError:  "authorization header is not a Bearer token",
 		},
 		{
-			name:          "malformed header – only token type",
-			headers:       http.Header{"Authorization": {"Bearer"}},
-			expectErr:     true,
-			expectedError: "invalid Authorization header format",
+			name:           "malformed header – only token type",
+			headers:        http.Header{"Authorization": {"Bearer"}},
+			expectErr:      true,
+			expectedError:  "invalid Authorization header format",
 		},
 		{
-			name:    "extra spaces are ignored",
-			headers: http.Header{"Authorization": {"Bearer   abc123  "}},
-			wantToken:     "abc123",
-			expectErr:     false,
+			name:    		"extra spaces are ignored",
+			headers: 		http.Header{"Authorization": {"Bearer   abc123  "}},
+			wantToken:      "abc123",
+			expectErr:      false,
 		},
 		{
-			name:          "case‑sensitive token type",
-			headers:       http.Header{"Authorization": {"bearer abc123"}},
-			expectErr:     true,
-			expectedError: "authorization header is not a Bearer token",
+			name:           "case‑sensitive token type",
+			headers:        http.Header{"Authorization": {"bearer abc123"}},
+			expectErr:      true,
+			expectedError:  "authorization header is not a Bearer token",
 		},
 	}
 
@@ -294,6 +294,76 @@ func TestGetBearerToken(t *testing.T) {
 			}
 			if token != tt.wantToken {
 				t.Errorf("wrong token.\nGot:  %q\nWant: %q", token, tt.wantToken)
+			}
+		})
+	}
+}
+
+func TestGetAPIKey(t *testing.T) {
+	tests := []struct {
+		name          string
+		headers       http.Header
+		wantKey       string
+		expectErr     bool
+		expectedError string
+	}{
+		{
+			name:          	"missing Authorization header",
+			headers:       	http.Header{},
+			expectErr:     	true,
+			expectedError: 	"no Authorization header provided",
+		},
+		{
+			name:    		"valid ApiKey header",
+			headers: 		http.Header{"Authorization": {"ApiKey 1234567890"}},
+			wantKey:        "1234567890",
+			expectErr:      false,
+		},
+		{
+			name:           "wrong token type",
+			headers:        http.Header{"Authorization": {"Bearer abcdef"}},
+			expectErr:      true,
+			expectedError:  "authorization header is not an apikey",
+		},
+		{
+			name:           "malformed header – only type",
+			headers:        http.Header{"Authorization": {"ApiKey"}},
+			expectErr:      true,
+			expectedError:  "invalid Authorization header format",
+		},
+		{
+			name:    		"extra spaces are tolerated",
+			headers: 		http.Header{"Authorization": {"ApiKey   9876543210  "}},
+			wantKey:        "9876543210",
+			expectErr:      false,
+		},
+		{
+			name:           "case‑sensitive token type",
+			headers:        http.Header{"Authorization": {"apikey abcdef"}},
+			expectErr:      true,
+			expectedError:  "authorization header is not an apikey",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key, err := auth.GetAPIKey(tt.headers)
+
+			if tt.expectErr {
+				if err == nil {
+					t.Fatalf("expected error but got none (key=%q)", key)
+				}
+				if err.Error() != tt.expectedError {
+					t.Errorf("unexpected error message.\nGot:  %q\nWant: %q", err.Error(), tt.expectedError)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("did not expect an error, but got: %v", err)
+			}
+			if key != tt.wantKey {
+				t.Errorf("wrong API key.\nGot:  %q\nWant: %q", key, tt.wantKey)
 			}
 		})
 	}

@@ -36,6 +36,7 @@ func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (str
 	if err != nil {
         return "", err
     }
+	
     return signedToken, nil
 }
 
@@ -58,10 +59,12 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 	if !token.Valid {
 		return uuid.Nil, errors.New("invalid token")
 	}
+
 	subject, err := token.Claims.GetSubject()
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("cannot get token subject: %w", err)
 	}
+
 	id, err := uuid.Parse(subject)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("subject is not a valid UUID: %w", err)
@@ -75,6 +78,7 @@ func GetBearerToken(headers http.Header) (string, error) {
 	if authHeader == "" {
 		return "", errors.New("no Authorization header provided")
 	}
+
 	var tokenType, token string
 	n, err := fmt.Sscanf(authHeader, "%s %s", &tokenType, &token)
 	if err != nil || n != 2 {
@@ -83,6 +87,7 @@ func GetBearerToken(headers http.Header) (string, error) {
 	if tokenType != "Bearer" {
 		return "", errors.New("authorization header is not a Bearer token")
 	}
+
 	return token, nil
 }
 
@@ -92,5 +97,25 @@ func MakeRefreshToken() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("error generating refresh token: %w", err)
 	}
+
 	return hex.EncodeToString(b), nil
+}
+
+func GetAPIKey(headers http.Header) (string, error) {
+	//Authorization: ApiKey THE_KEY_HERE
+	authHeader := headers.Get("Authorization")
+	if authHeader == "" {
+		return "", errors.New("no Authorization header provided")
+	}
+
+	var authType, key string
+	n, err := fmt.Sscanf(authHeader, "%s %s", &authType, &key)
+	if err != nil || n != 2 {
+		return "", errors.New("invalid Authorization header format")
+	}
+	if authType != "ApiKey" {
+		return "", errors.New("authorization header is not an apikey")
+	}
+
+	return key, nil
 }

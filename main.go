@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -164,11 +165,37 @@ func (ac *apiConfig)chirpsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ac *apiConfig)getChirpsHandler(w http.ResponseWriter, r *http.Request) {
+	authID := r.URL.Query().Get("author_id")
+	if authID != "" {
+		userID, err := uuid.Parse(authID)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "invalid author_id UUID")
+			return
+		}
+
+		posts, err := ac.db.GetChirpsByUserID(r.Context(), userID)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "error retrieving db entry")
+			return
+		}
+
+		respondWithJSON(w, http.StatusOK, posts)
+		return
+	}
+
 	posts, err := ac.db.GetAllChirps(r.Context())
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "error retrieving db entry")
 		return
 	}
+
+	sortType := r.URL.Query().Get("sort")
+	if sortType == "desc" {
+		sort.Slice(posts, func(i, j int) bool {
+			return posts[i].CreatedAt.After(posts[j].CreatedAt)
+		})
+	}
+
 	respondWithJSON(w, http.StatusOK, posts)
 }
 
